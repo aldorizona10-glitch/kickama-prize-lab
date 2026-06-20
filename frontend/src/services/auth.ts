@@ -124,11 +124,100 @@ export interface Session {
 const TOKEN_KEY = 'tot_auth_tokens';
 const USER_KEY = 'tot_user_data';
 const REFRESH_THRESHOLD = 60; // seconds before expiry to attempt refresh
+const REFRESH_LOCK_KEY = 'tot_refresh_lock';
+const REFRESH_RESULT_KEY = 'tot_refresh_result';
+const BROADCAST_CHANNEL_NAME = 'tot_auth_refresh';
 
 let currentTokens: AuthTokens | null = null;
 let currentUser: User | null = null;
 let refreshTimer: number | null = null;
+let inFlightRefresh: Promise<AuthTokens | null> | null = null;
 let authListeners: Array<(user: User | null) => void> = [];
+
+// ---------------------------------------------------------------------------
+// CROSS-TAB COORDINATION
+// ---------------------------------------------------------------------------
+
+let broadcastChannel: BroadcastChannel | null = null;
+
+function getBroadcastChannel(): BroadcastChannel | null {
+  if (typeof BroadcastChannel === 'undefined') return null;
+  if (!broadcastChannel) {
+    try {
+      broadcastChannel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
+      broadcastChannel.onmessage = (event: MessageEvent) => {
+        if (event.data?.type === 'refresh_complete') {
+          const tokens = event.data.tokens as AuthTokens;
+          if (tokens && !isTokenExpired(tokens.accessToken)) {
+            storeTokens(tokens);
+            scheduleTokenRefresh(tokens);
+            inFlightRefresh = null;
+          }
+        } else if (event.data?.type === 'refresh_started') {
+          clearRefreshLock();
+        }
+      };
+    } catch {
+      // BroadcastChannel may not be available
+    }
+  }
+  return broadcastChannel;
+}
+
+function acquireRefreshLock(): boolean {
+  try {
+    const now = Date.now();
+    const stored = localStorage.getItem(REFRESH_LOCK_KEY);
+    if (stored) {
+      const lockTime = parseInt(stored, 10);
+      if (now - lockTime < 30_000) {
+        return false; // Another tab holds the lock
+      }
+    }
+    localStorage.setItem(REFRESH_LOCK_KEY, String(now));
+    if (localStorage.getItem(REFRESH_LOCK_KEY) === String(now)) {
+      return true;
+    }
+    return false;
+  } catch {
+    return true; // localStorage unavailable — always refresh
+  }
+}
+
+function clearRefreshLock(): void {
+  try {
+    localStorage.removeItem(REFRESH_LOCK_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function broadcastRefreshResult(tokens: AuthTokens): void {
+  const channel = getBroadcastChannel();
+  if (channel) {
+    try {
+      channel.postMessage({ type: 'refresh_complete', tokens });
+    } catch {
+      // ignore
+    }
+  }
+  try {
+    localStorage.setItem(REFRESH_RESULT_KEY, JSON.stringify(tokens));
+  } catch {
+    // ignore
+  }
+}
+
+function broadcastRefreshStarted(): void {
+  const channel = getBroadcastChannel();
+  if (channel) {
+    try {
+      channel.postMessage({ type: 'refresh_started' });
+    } catch {
+      // ignore
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // HELPERS
@@ -277,24 +366,73 @@ export async function logout(): Promise<void> {
 }
 
 export async function refreshTokens(): Promise<AuthTokens | null> {
+  // Same-tab: share one in-flight request
+  if (inFlightRefresh) {
+    return inFlightRefresh;
+  }
+
   const tokens = currentTokens || loadStoredTokens();
   if (!tokens?.refreshToken) return null;
 
-  try {
-    const response = await post<{ tokens: AuthTokens }>('/auth/refresh', {
-      refreshToken: tokens.refreshToken,
+  // Cross-tab: only one tab does the network refresh
+  if (!acquireRefreshLock()) {
+    // Another tab is refreshing — wait for result via BroadcastChannel
+    // Poll localStorage as fallback if BroadcastChannel is unavailable
+    return new Promise((resolve) => {
+      const attempts = 30;
+      let i = 0;
+      const check = () => {
+        try {
+          const stored = localStorage.getItem(REFRESH_RESULT_KEY);
+          if (stored) {
+            const result = JSON.parse(stored) as AuthTokens;
+            if (!isTokenExpired(result.accessToken)) {
+              clearRefreshLock();
+              resolve(result);
+              return;
+            }
+          }
+        } catch {
+          // ignore
+        }
+        if (++i >= attempts) {
+          clearRefreshLock();
+          resolve(null);
+          return;
+        }
+        setTimeout(check, 1000);
+      };
+      check();
     });
-
-    storeTokens(response.data.tokens);
-    scheduleTokenRefresh(response.data.tokens);
-
-    return response.data.tokens;
-  } catch {
-    clearStoredTokens();
-    currentUser = null;
-    notifyListeners(null);
-    return null;
   }
+
+  // We hold the lock — broadcast that we're refreshing
+  broadcastRefreshStarted();
+
+  inFlightRefresh = (async (): Promise<AuthTokens | null> => {
+    try {
+      const response = await post<{ tokens: AuthTokens }>('/auth/refresh', {
+        refreshToken: tokens.refreshToken,
+      });
+
+      storeTokens(response.data.tokens);
+      scheduleTokenRefresh(response.data.tokens);
+      broadcastRefreshResult(response.data.tokens);
+      clearRefreshLock();
+
+      return response.data.tokens;
+    } catch {
+      clearStoredTokens();
+      clearRefreshLock();
+      currentUser = null;
+      notifyListeners(null);
+      return null;
+    } finally {
+      inFlightRefresh = null;
+    }
+  })();
+
+  return inFlightRefresh;
 }
 
 export async function getCurrentUser(): Promise<User | null> {

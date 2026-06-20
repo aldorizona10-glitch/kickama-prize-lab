@@ -299,6 +299,7 @@ type Collector struct {
 	flushInterval time.Duration
 	maxBacklog    int
 	stopCh        chan struct{}
+	started       bool
 	flushed       int64
 	errors        int64
 	dropped       int64
@@ -458,10 +459,22 @@ func (c *Collector) RecordHistogram(name string, value float64, tags ...MetricTa
 // Start begins the background flush loop. It spawns a goroutine that
 // periodically flushes collected metrics to the backend. The flush
 // loop will stop when the context is cancelled or Stop() is called.
-// NOTE: Calling Start() multiple times will spawn multiple flush
-// goroutines, causing duplicate flushes. This is a known issue.
-// TODO: Make Start() idempotent.
+// Start is idempotent: calling it multiple times will not create
+// duplicate flush goroutines. After Stop(), the collector can be
+// restarted with a fresh Start() call.
 func (c *Collector) Start(ctx context.Context) {
+	c.mu.Lock()
+	if c.started {
+		c.mu.Unlock()
+		return
+	}
+	// Create a fresh stop channel so a previous Stop() doesn't
+	// immediately kill this new loop.
+	c.stopCh = make(chan struct{})
+	c.started = true
+	stopCh := c.stopCh
+	c.mu.Unlock()
+
 	go func() {
 		// Tick immediately to flush any bootstrapped metrics
 		c.flush(ctx)
@@ -470,10 +483,16 @@ func (c *Collector) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
+				c.mu.Lock()
+				c.started = false
+				c.mu.Unlock()
 				// Final flush before exiting
 				c.flush(context.Background())
 				return
-			case <-c.stopCh:
+			case <-stopCh:
+				c.mu.Lock()
+				c.started = false
+				c.mu.Unlock()
 				return
 			case <-ticker.C:
 				c.flush(ctx)
@@ -484,10 +503,18 @@ func (c *Collector) Start(ctx context.Context) {
 
 // Stop signals the flush loop to stop. It does NOT perform a final flush.
 // If you want a final flush, call Flush() before Stop().
-// TODO: Add a Drain() method that performs a final flush and then stops.
+// Stop is non-blocking and safe to call even if the collector is not running.
+// After Stop(), the collector can be restarted with Start().
 func (c *Collector) Stop() {
+	c.mu.RLock()
+	if !c.started {
+		c.mu.RUnlock()
+		return
+	}
+	ch := c.stopCh
+	c.mu.RUnlock()
 	select {
-	case c.stopCh <- struct{}{}:
+	case ch <- struct{}{}:
 	default:
 	}
 }

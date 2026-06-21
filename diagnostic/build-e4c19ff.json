@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-06-21T02:07:38+00:00",
+  "commit": "e4c19ff",
+  "diagnostic_logd": "diagnostic/build-e4c19ff.logd",
+  "diagnostic_logd_error": null,
+  "chunked": false,
+  "chunk_size_bytes": null,
+  "password": "61cf10e4218ae05b1870",
+  "decrypt_command": "encryptly unpack diagnostic/build-e4c19ff.logd <outdir> --password 61cf10e4218ae05b1870",
+  "total_modules": 1,
+  "passed": 1,
+  "failed": 0,
+  "modules": [
+    {
+      "name": "terraform-import",
+      "status": "PASS",
+      "elapsed_seconds": 1.5,
+      "artifact": null,
+      "output": "Plan summary: OK"
+    }
+  ],
+  "pr_note": "Diagnostic bundle for PR #414"
+}

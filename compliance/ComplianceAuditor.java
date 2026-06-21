@@ -12,8 +12,6 @@ import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.nio.file.*;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.JsonProcessingException;
 
 /**
  * FUCKING Compliance Auditor.
@@ -430,8 +428,8 @@ public class ComplianceAuditor {
 
         // Convert to JSON string
         try {
-            return new ObjectMapper().writeValueAsString(report);
-        } catch (JsonProcessingException e) {
+            return manualToJson(report);
+        } catch (Exception e) {
             throw new RuntimeException("Failed to generate JSON report", e);
         }
     }
@@ -444,7 +442,7 @@ public class ComplianceAuditor {
      */
     public static ComplianceResult generateJsonReportFromJson(String json) {
         try {
-            Map<String, Object> jsonMap = new ObjectMapper().readValue(json, Map.class);
+            Map<String, Object> jsonMap = parseJsonMap(json);
             boolean compliant = (Boolean) jsonMap.get("compliant");
             String summary = (String) jsonMap.get("summary");
 
@@ -458,7 +456,7 @@ public class ComplianceAuditor {
             }
 
             return new ComplianceResult(compliant, violations, summary);
-        } catch (JsonProcessingException e) {
+        } catch (Exception e) {
             throw new RuntimeException("Failed to parse JSON report", e);
         }
     }
@@ -635,8 +633,152 @@ public class ComplianceAuditor {
         }
     }
 
-    // Fuck it. That's the end of the class.
-    // If you've read this far, you're either debugging a production issue
-    // or you're the new hire who was given this as a "learning exercise."
-    // I'm sorry. It gets better. (No it doesn't.)
-}
+    // ------------------------------------------------------------------
+    // MANUAL JSON HELPERS (no external dependencies)
+    // ------------------------------------------------------------------
+
+    /**
+     * Escape a string for JSON output.
+     */
+    private static String jsonEscape(String s) {
+        if (s == null) return "null";
+        StringBuilder sb = new StringBuilder();
+        sb.append('"');
+        for (char c : s.toCharArray()) {
+            switch (c) {
+                case '"': sb.append("\\\""); break;
+                case '\\': sb.append("\\\\"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                default:
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+            }
+        }
+        sb.append('"');
+        return sb.toString();
+    }
+
+    /**
+     * Convert a map to a JSON string manually.
+     * Handles String, Boolean, Number, List, and Map values.
+     */
+    static String manualToJson(Map<String, Object> map) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{");
+        boolean first = true;
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            if (!first) sb.append(",");
+            first = false;
+            sb.append(jsonEscape(entry.getKey()));
+            sb.append(":");
+            sb.append(toJsonValue(entry.getValue()));
+        }
+        sb.append("}");
+        return sb.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String toJsonValue(Object value) {
+        if (value == null) return "null";
+        if (value instanceof Boolean) return value.toString();
+        if (value instanceof Number) return value.toString();
+        if (value instanceof String) return jsonEscape((String) value);
+        if (value instanceof List) {
+            List<Object> list = (List<Object>) value;
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+            for (Object item : list) {
+                if (!first) sb.append(",");
+                first = false;
+                sb.append(toJsonValue(item));
+            }
+            sb.append("]");
+            return sb.toString();
+        }
+        if (value instanceof Map) {
+            return manualToJson((Map<String, Object>) value);
+        }
+        return jsonEscape(value.toString());
+    }
+
+    /**
+     * Minimal JSON parser: extracts top-level string/boolean/number values.
+     * Not a full parser - sufficient for reading back our own output.
+     */
+    static Map<String, Object> parseJsonMap(String json) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        // Strip outer braces
+        String inner = json.trim();
+        if (inner.startsWith("{")) inner = inner.substring(1);
+        if (inner.endsWith("}")) inner = inner.substring(0, inner.length() - 1);
+
+        // Parse key-value pairs (sufficient for our flat structure)
+        int i = 0;
+        while (i < inner.length()) {
+            // Skip whitespace
+            while (i < inner.length() && Character.isWhitespace(inner.charAt(i))) i++;
+            if (i >= inner.length()) break;
+            if (inner.charAt(i) == ',') { i++; continue; }
+
+            // Parse key
+            if (inner.charAt(i) != '"') break;
+            i++; // skip opening quote
+            StringBuilder key = new StringBuilder();
+            while (i < inner.length() && inner.charAt(i) != '"') {
+                if (inner.charAt(i) == '\\') { i++; }
+                key.append(inner.charAt(i));
+                i++;
+            }
+            i++; // skip closing quote
+
+            // Skip colon
+            while (i < inner.length() && Character.isWhitespace(inner.charAt(i))) i++;
+            if (i < inner.length() && inner.charAt(i) == ':') i++;
+            while (i < inner.length() && Character.isWhitespace(inner.charAt(i))) i++;
+
+            // Parse value
+            if (i >= inner.length()) break;
+            char vc = inner.charAt(i);
+            if (vc == '"') {
+                // String value
+                i++; // skip opening quote
+                StringBuilder val = new StringBuilder();
+                while (i < inner.length() && inner.charAt(i) != '"') {
+                    if (inner.charAt(i) == '\\') { i++; }
+                    val.append(inner.charAt(i));
+                    i++;
+                }
+                i++; // skip closing quote
+                result.put(key.toString(), val.toString());
+            } else if (vc == 't' || vc == 'f') {
+                // Boolean
+                String boolStr = inner.substring(i, i + 4).startsWith("true") ? "true" : "false";
+                result.put(key.toString(), Boolean.parseBoolean(boolStr));
+                i += boolStr.length();
+            } else if (vc == 'n') {
+                result.put(key.toString(), null);
+                i += 4;
+            } else {
+                // Number or nested - skip to next comma/brace
+                int start = i;
+                while (i < inner.length() && inner.charAt(i) != ',' && inner.charAt(i) != '}') i++;
+                String numStr = inner.substring(start, i).trim();
+                try {
+                    if (numStr.contains(".")) {
+                        result.put(key.toString(), Double.parseDouble(numStr));
+                    } else {
+                        result.put(key.toString(), Long.parseLong(numStr));
+                    }
+                } catch (NumberFormatException e) {
+                    result.put(key.toString(), numStr);
+                }
+            }
+        }
+        return result;
+    }
+

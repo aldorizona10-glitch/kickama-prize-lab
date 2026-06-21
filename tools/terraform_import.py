@@ -39,6 +39,82 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("terraform_import")
 
 # ---------------------------------------------------------------------------
+# PLAN SUMMARY HELPERS
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate a secret or sensitive value in a resource ID
+_SENSITIVE_PATTERNS = [
+    re.compile(r'password', re.IGNORECASE),
+    re.compile(r'token', re.IGNORECASE),
+    re.compile(r'api[_-]?key', re.IGNORECASE),
+    re.compile(r'secret', re.IGNORECASE),
+    re.compile(r'private[_-]?key', re.IGNORECASE),
+    re.compile(r'access[_-]?key', re.IGNORECASE),
+    re.compile(r'/iam/.*credentials', re.IGNORECASE),
+    re.compile(r'/ssm/.*parameter.*[Ss]ecret', re.IGNORECASE),
+    re.compile(r'/secretsmanager/', re.IGNORECASE),
+]
+
+
+def redact_secret_ids(resource_id: str) -> str:
+    """Redact resource IDs that look like secrets (passwords, tokens, keys,
+    ARNs with sensitive paths).
+
+    Returns a redacted version like ``REDACTED(i-abc123.../5)`` when the
+    resource_id contains sensitive tokens, otherwise returns it unchanged.
+    """
+    for pattern in _SENSITIVE_PATTERNS:
+        if pattern.search(resource_id):
+            # Keep first 8 chars for traceability
+            short = resource_id[:8] + ".../" + resource_id.rsplit("/", 1)[-1] if "/" in resource_id else resource_id[:8] + "..."
+            return f"REDACTED({short})"
+    return resource_id
+
+
+def generate_plan_summary(
+    resources: list,
+    state_resources: Optional[List[str]] = None,
+) -> dict:
+    """Build a deterministic JSON-serializable import plan summary.
+
+    Parameters
+    ----------
+    resources : list[ResourceToImport]
+        Resources that would be imported.
+    state_resources : list[str] | None
+        Existing Terraform state resource addresses.  Used to mark resources
+        that are *already imported*.
+
+    Returns
+    -------
+    dict
+        ``{"resources": [...], "total": N, "already_imported": M}``
+    """
+    state_set = set(state_resources or [])
+    entries = []
+
+    for r in resources:
+        address = f"{r.resource_type}.{r.resource_name}"
+        entries.append({
+            "address": address,
+            "resource_type": r.resource_type,
+            "resource_id": redact_secret_ids(r.resource_id),
+            "import_id": r.resource_id,
+            "already_imported": address in state_set,
+        })
+
+    # Sort deterministically by address
+    entries.sort(key=lambda e: e["address"])
+
+    already = sum(1 for e in entries if e["already_imported"])
+    return {
+        "resources": entries,
+        "total": len(entries),
+        "already_imported": already,
+    }
+
+
+# ---------------------------------------------------------------------------
 # CONSTANTS
 # ---------------------------------------------------------------------------
 
@@ -441,6 +517,8 @@ def parse_args():
     parser.add_argument("--detect-unmanaged", action="store_true", help="Detect unmanaged AWS resources")
     parser.add_argument("--list-state", action="store_true", help="List all resources in Terraform state")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
+    parser.add_argument("--plan-summary", help="Write JSON plan summary to file (PATH)")
+    parser.add_argument("--format", choices=["json"], default="json", help="Output format (default: json)")
     return parser.parse_args()
 
 
@@ -508,6 +586,16 @@ def main():
 
         logger.info(f"Loaded {len(resources_to_import)} resources from {args.csv}")
 
+        if args.plan_summary:
+            state_resources = importer.list_resources_in_state()
+            plan = generate_plan_summary(resources_to_import, state_resources)
+            with open(args.plan_summary, "w") as f:
+                json.dump(plan, f, indent=2)
+            logger.info(f"Plan summary written to {args.plan_summary}")
+            if args.dry_run:
+                print(json.dumps(plan, indent=2))
+            return 0
+
         if args.generate_script:
             importer.generate_import_script(resources_to_import, args.generate_script)
         else:
@@ -524,5 +612,49 @@ def main():
     return 0
 
 
+# ---------------------------------------------------------------------------
+# TEST FIXTURES
+# ---------------------------------------------------------------------------
+
+def test_redact_secrets():
+    assert redact_secret_ids("https://iam.amazonaws.com/credentials/password123") == "REDACTED(https://.../password123)"
+    assert redact_secret_ids("AKIAIOSFODNN7EXAMPLE") == "AKIAIOSFODNN7EXAMPLE"
+    assert redact_secret_ids("arn:aws:secretsmanager:us-east-1:123456789012:secret:mySecret") == "REDACTED(arn:aws:...)"
+    assert redact_secret_ids("normal_resource_id") == "normal_resource_id"
+    print("✓ test_redact_secrets")
+
+
+def test_deterministic_sort():
+    r1 = ResourceToImport(resource_type="aws_s3_bucket", resource_name="bucket1", resource_id="id1")
+    r2 = ResourceToImport(resource_type="aws_instance", resource_name="web", resource_id="i-abc123")
+    r3 = ResourceToImport(resource_type="aws_vpc", resource_name="main", resource_id="vpc-xyz789")
+
+    plan = generate_plan_summary([r3, r1, r2])
+    addresses = [e["address"] for e in plan["resources"]]
+    assert addresses == ["aws_instance.web", "aws_s3_bucket.bucket1", "aws_vpc.main"]
+    print("✓ test_deterministic_sort")
+
+
+def test_plan_summary_generation():
+    r1 = ResourceToImport(resource_type="aws_s3_bucket", resource_name="bucket1", resource_id="id1")
+    r2 = ResourceToImport(resource_type="aws_instance", resource_name="web", resource_id="i-abc123")
+    r3 = ResourceToImport(resource_type="aws_vpc", resource_name="main", resource_id="vpc-xyz789")
+
+    plan = generate_plan_summary([r3, r1, r2], ["aws_s3_bucket.bucket1"])
+    assert plan["total"] == 3
+    assert plan["already_imported"] == 1
+    assert plan["resources"][0]["address"] == "aws_instance.web"
+    assert plan["resources"][0]["already_imported"] == False
+    assert plan["resources"][1]["already_imported"] == True
+    print("✓ test_plan_summary_generation")
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        test_redact_secrets()
+        test_deterministic_sort()
+        test_plan_summary_generation()
+        print("\nAll test fixtures passed!")
+        sys.exit(0)
+
     sys.exit(main())

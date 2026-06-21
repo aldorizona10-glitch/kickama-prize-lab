@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-06-21T02:07:07+00:00",
+  "commit": "e03df08",
+  "diagnostic_logd": "diagnostic/build-e03df08.logd",
+  "diagnostic_logd_error": null,
+  "chunked": false,
+  "chunk_size_bytes": null,
+  "password": "0fd79b2c3b7afff1bd3a",
+  "decrypt_command": "encryptly unpack diagnostic/build-e03df08.logd <outdir> --password 0fd79b2c3b7afff1bd3a",
+  "total_modules": 2,
+  "passed": 2,
+  "failed": 0,
+  "modules": [
+    {
+      "name": "terraform-import",
+      "status": "PASS",
+      "elapsed_seconds": 1.2,
+      "artifact": null,
+      "output": "OK"
+    },
+    {
+      "name": "compliance-auditor",
+      "status": "PASS",
+      "elapsed_seconds": 0.8,
+      "artifact": null,
+      "output": "OK"
+    }
+  ],
+  "pr_note": "Diagnostic bundle for PR #415"
+}

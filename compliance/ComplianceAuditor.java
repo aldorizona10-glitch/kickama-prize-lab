@@ -9,6 +9,11 @@ import java.time.format.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.Logger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.nio.file.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonProcessingException;
 
 /**
  * FUCKING Compliance Auditor.
@@ -316,6 +321,318 @@ public class ComplianceAuditor {
         public boolean isCompliant() { return compliant; }
         public Collection<String> getViolations() { return violations; }
         public String getSummary() { return summary; }
+
+        /**
+         * Generate JSON report from this ComplianceResult
+         * @param checkType The type of compliance check being reported
+         * @return JSON string representation of the report
+         */
+        public String toJson(String checkType) {
+            return generateJsonReport(checkType, this);
+        }
+
+        /**
+         * Static method to create a ComplianceResult from JSON
+         * @param json JSON string to deserialize
+         * @return ComplianceResult object
+         * @throws RuntimeException if JSON parsing fails
+         */
+        public static ComplianceResult fromJson(String json) {
+            return generateJsonReportFromJson(json);
+        }
+    }
+
+    /**
+     * Inner class for JSON report structure
+     */
+    public static class JsonReport {
+        private final Instant timestamp;
+        private final String checkType;
+        private final boolean compliant;
+        private final List<Violation> violations;
+        private final String summary;
+
+        public JsonReport(String checkType, ComplianceResult result) {
+            this.timestamp = Instant.now();
+            this.checkType = checkType;
+            this.compliant = result.isCompliant();
+            this.violations = new ArrayList<>();
+            this.summary = result.getSummary();
+
+            for (String violation : result.getViolations()) {
+                // Basic parsing - in real implementation, you'd extract ruleId, severity, message, file, remediation from violation string
+                // For now, we'll create simplified violation objects
+                Violation v = new Violation("RULE_" + (violations.size() + 1), "MEDIUM", violation, "unknown", "Review and fix violation");
+                this.violations.add(v);
+            }
+        }
+
+        // Getters for JSON serialization
+        public Instant getTimestamp() { return timestamp; }
+        public String getCheckType() { return checkType; }
+        public boolean isCompliant() { return compliant; }
+        public List<Violation> getViolations() { return violations; }
+        public String getSummary() { return summary; }
+    }
+
+    /**
+     * Inner class for individual violation details
+     */
+    public static class Violation {
+        private final String ruleId;
+        private final String severity;
+        private final String message;
+        private final String file;
+        private final String remediation;
+
+        public Violation(String ruleId, String severity, String message, String file, String remediation) {
+            this.ruleId = ruleId;
+            this.severity = severity;
+            this.message = message;
+            this.file = file;
+            this.remediation = remediation;
+        }
+
+        // Getters for JSON serialization
+        public String getRuleId() { return ruleId; }
+        public String getSeverity() { return severity; }
+        public String getMessage() { return message; }
+        public String getFile() { return file; }
+        public String getRemediation() { return remediation; }
+    }
+
+    /**
+     * Generates a JSON report for a compliance check result
+     * @param checkType The type of compliance check
+     * @param result The ComplianceResult to generate report from
+     * @return JSON string representation of the report
+     */
+    public static String generateJsonReport(String checkType, ComplianceResult result) {
+        Map<String, Object> report = new HashMap<>();
+        report.put("timestamp", Instant.now().toString());
+        report.put("checkType", checkType);
+        report.put("compliant", result.isCompliant());
+        report.put("summary", result.getSummary());
+
+        List<Map<String, Object>> violationsJson = new ArrayList<>();
+        for (String violation : result.getViolations()) {
+            Map<String, Object> violationMap = new HashMap<>();
+            // Basic parsing - extract ruleId, severity, file from violation string if possible
+            violationMap.put("ruleId", "RULE_" + (violationsJson.size() + 1));
+            violationMap.put("severity", "MEDIUM");
+            violationMap.put("message", violation);
+            violationMap.put("file", "unknown");
+            violationMap.put("remediation", "Review and fix violation");
+            violationsJson.add(violationMap);
+        }
+
+        report.put("violations", violationsJson);
+
+        // Convert to JSON string
+        try {
+            return new ObjectMapper().writeValueAsString(report);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Failed to generate JSON report", e);
+        }
+    }
+
+    /**
+     * Generates a ComplianceResult from a JSON string
+     * @param json JSON string to parse
+     * @return ComplianceResult object
+     * @throws RuntimeException if JSON parsing fails
+     */
+    public static ComplianceResult generateJsonReportFromJson(String json) {
+        try {
+            Map<String, Object> jsonMap = new ObjectMapper().readValue(json, Map.class);
+            boolean compliant = (Boolean) jsonMap.get("compliant");
+            String summary = (String) jsonMap.get("summary");
+
+            List<Map<String, Object>> violationsJson = (List<Map<String, Object>>) jsonMap.get("violations");
+            Collection<String> violations = new ArrayList<>();
+
+            if (violationsJson != null) {
+                for (Map<String, Object> violationMap : violationsJson) {
+                    violations.add((String) violationMap.get("message"));
+                }
+            }
+
+            return new ComplianceResult(compliant, violations, summary);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Failed to parse JSON report", e);
+        }
+    }
+
+    /**
+     * Main method for CLI usage
+     * @param args Command line arguments
+     */
+    public static void main(String[] args) {
+        LOGGER.info("Starting ComplianceAuditor");
+
+        // Parse command line arguments
+        String outputPath = null;
+        Map<String, Object> data = new HashMap<>();
+
+        for (int i = 0; i < args.length; i++) {
+            switch (args[i]) {
+                case "--json-report":
+                    if (i + 1 < args.length) {
+                        outputPath = args[i + 1];
+                        i++;
+                    } else {
+                        System.err.println("ERROR: --json-report requires a path argument");
+                        System.exit(1);
+                    }
+                    break;
+                case "--check-type":
+                    if (i + 1 < args.length) {
+                        data.put("check_type", args[i + 1]);
+                        i++;
+                    }
+                    break;
+                case "--kyc-status":
+                    if (i + 1 < args.length) {
+                        data.put("kyc_status", args[i + 1]);
+                        i++;
+                    }
+                    break;
+                case "--aml-amount":
+                    if (i + 1 < args.length) {
+                        try {
+                            double amount = Double.parseDouble(args[i + 1]);
+                            data.put("transaction_amount", amount);
+                        } catch (NumberFormatException e) {
+                            System.err.println("ERROR: Invalid amount format: " + args[i + 1]);
+                            System.exit(1);
+                        }
+                        i++;
+                    }
+                    break;
+                case "--help":
+                    printUsage();
+                    System.exit(0);
+                    break;
+                default:
+                    if (!args[i].startsWith("--")) {
+                        System.err.println("ERROR: Unknown argument: " + args[i]);
+                        printUsage();
+                        System.exit(1);
+                    }
+                    break;
+            }
+        }
+
+        // Default checkType if not provided
+        String checkType = (String) data.getOrDefault("check_type", "KYC");
+
+        try {
+            ComplianceAuditor auditor = new ComplianceAuditor(
+                "https://regulator.example.com",
+                "admin",
+                "password123"
+            );
+            ComplianceResult result = auditor.auditCompliance(checkType, data);
+
+            if (outputPath != null) {
+                // Generate and save JSON report
+                String jsonReport = result.toJson(checkType);
+                saveJsonReport(outputPath, jsonReport);
+                LOGGER.info("JSON report saved to: " + outputPath);
+            } else {
+                // Default human-readable output
+                LOGGER.info("=== COMPLIANCE AUDIT REPORT ===");
+                LOGGER.info("Check Type: " + checkType);
+                LOGGER.info("Status: " + (result.isCompliant() ? "COMPLIANT" : "NON-COMPLIANT"));
+                LOGGER.info("Summary: " + result.getSummary());
+                if (!result.getViolations().isEmpty()) {
+                    LOGGER.info("Violations:");
+                    int i = 1;
+                    for (String violation : result.getViolations()) {
+                        LOGGER.info(i++ + ". " + violation);
+                    }
+                }
+            }
+
+        } catch (Exception e) {
+            LOGGER.severe("Compliance audit failed: " + e.getMessage());
+            System.err.println("ERROR: Compliance audit failed: " + e.getMessage());
+            System.exit(1);
+        }
+    }
+
+    /**
+     * Prints usage information
+     */
+    private static void printUsage() {
+        System.out.println("ComplianceAuditor Usage:");
+        System.out.println("  java ComplianceAuditor [OPTIONS]");
+        System.out.println();
+        System.out.println("Options:");
+        System.out.println("  --json-report PATH      Generate JSON report to specified file");
+        System.out.println("  --check-type TYPE       Specify compliance check type (e.g., KYC, AML)");
+        System.out.println("  --kyc-status STATUS     Set KYC status for audit");
+        System.out.println("  --aml-amount AMOUNT     Set transaction amount for AML audit");
+        System.out.println("  --help                  Show this help message");
+        System.out.println();
+        System.out.println("Examples:");
+        System.out.println("  java ComplianceAuditor --check-type KYC --kyc-status approved --json-report report.json");
+        System.out.println("  java ComplianceAuditor --check-type AML --aml-amount 15000.00 --json-report report.json");
+    }
+
+    /**
+     * Saves JSON report to file
+     * @param path File path to save report
+     * @param content JSON content
+     * @throws IOException if file write fails
+     */
+    private static void saveJsonReport(String path, String content) throws IOException {
+        Path filePath = Paths.get(path);
+        Files.createDirectories(filePath.getParent());
+        Files.writeString(filePath, content);
+    }
+
+    // Test fixtures for JSON report functionality
+    public static class TestFixtures {
+
+        /**
+         * Test fixture for passing JSON report
+         * @return Passing ComplianceResult
+         */
+        public static ComplianceResult testJsonReportPass() {
+            return new ComplianceResult(
+                true,
+                Collections.singletonList("KYC check passed"),
+                "All compliance checks passed"
+            );
+        }
+
+        /**
+         * Test fixture for failing JSON report
+         * @return Failing ComplianceResult
+         */
+        public static ComplianceResult testJsonReportFail() {
+            return new ComplianceResult(
+                false,
+                Arrays.asList(
+                    "KYC check failed: User has not completed KYC",
+                    "PEP check failed: Enhanced due diligence required"
+                ),
+                "Compliance check failed with 2 violations"
+            );
+        }
+
+        /**
+         * Test fixture for empty JSON report
+         * @return Empty ComplianceResult
+         */
+        public static ComplianceResult testJsonReportEmpty() {
+            return new ComplianceResult(
+                true,
+                Collections.emptyList(),
+                "No violations found"
+            );
+        }
     }
 
     // Fuck it. That's the end of the class.

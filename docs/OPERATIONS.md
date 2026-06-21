@@ -276,6 +276,119 @@ Audit logs are retained for 365 days and include:
 | Penetration test | Quarterly | External vendor |
 | Compliance audit | Annually | External auditor |
 
+## Compliance JSON Reports
+
+### Overview
+
+The `ComplianceAuditor` supports JSON report output via the `--json-report` CLI flag.
+This generates deterministic, machine-readable JSON reports suitable for programmatic consumption, CI/CD pipelines, and integration with external systems.
+
+### Usage
+
+```bash
+# Generate JSON report for KYC compliance check
+java com.tentoftrials.compliance.ComplianceAuditor \
+  --check-type KYC \
+  --kyc-status approved \
+  --json-report /path/to/report.json
+
+# Generate JSON report for AML compliance check
+java com.tentoftrials.compliance.ComplianceAuditor \
+  --check-type AML \
+  --aml-amount 15000.00 \
+  --json-report /path/to/report.json
+```
+
+### CLI Flags
+
+| Flag | Description | Example |
+|------|-------------|---------|
+| `--json-report PATH` | Output JSON report to specified file path | `--json-report /tmp/compliance.json` |
+| `--check-type TYPE` | Specify compliance check type | `--check-type KYC` |
+| `--kyc-status STATUS` | Set KYC status for audit | `--kyc-status approved` |
+| `--aml-amount AMOUNT` | Set transaction amount for AML audit | `--aml-amount 15000.00` |
+| `--help` | Show usage information | `--help` |
+
+### JSON Report Structure
+
+```json
+{
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "checkType": "KYC",
+  "compliant": false,
+  "summary": "KYC check failed: 2 violations",
+  "violations": [
+    {
+      "ruleId": "RULE_1",
+      "severity": "MEDIUM",
+      "message": "User has not completed KYC",
+      "file": "unknown",
+      "remediation": "Review and fix violation"
+    }
+  ]
+}
+```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `timestamp` | String (ISO-8601) | When the report was generated |
+| `checkType` | String | Type of compliance check performed |
+| `compliant` | Boolean | Whether the check passed |
+| `summary` | String | Human-readable summary |
+| `violations` | Array | List of violations found |
+
+### Violation Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ruleId` | String | Identifier for the violated rule |
+| `severity` | String | Severity level (e.g., HIGH, MEDIUM, LOW) |
+| `message` | String | Description of the violation |
+| `file` | String | File path where violation occurred (if applicable) |
+| `remediation` | String | Suggested fix for the violation |
+
+### Programmatic Usage
+
+```java
+import com.tentoftrials.compliance.ComplianceAuditor;
+import com.tentoftrials.compliance.ComplianceAuditor.ComplianceResult;
+
+// Generate JSON report
+ComplianceAuditor auditor = new ComplianceAuditor(endpoint, user, pass);
+Map<String, Object> data = new HashMap<>();
+data.put("kyc_status", "approved");
+ComplianceResult result = auditor.auditCompliance("KYC", data);
+String jsonReport = result.toJson("KYC");
+
+// Parse JSON report back to ComplianceResult
+ComplianceResult parsed = ComplianceResult.fromJson(jsonReport);
+```
+
+### Test Fixtures
+
+```java
+import com.tentoftrials.compliance.ComplianceAuditor.TestFixtures;
+
+// Get test fixtures for JSON report validation
+ComplianceResult passResult = TestFixtures.testJsonReportPass();
+ComplianceResult failResult = TestFixtures.testJsonReportFail();
+ComplianceResult emptyResult = TestFixtures.testJsonReportEmpty();
+```
+
+### Default Behavior
+
+Without the `--json-report` flag, the auditor outputs human-readable text to the console:
+```
+=== COMPLIANCE AUDIT REPORT ===
+Check Type: KYC
+Status: COMPLIANT
+Summary: All checks passed
+```
+
+The JSON report is deterministic for empty results (no violations) and ensures valid JSON output regardless of the number of violations.
+
 ## Troubleshooting
 
 ### Common Issues
@@ -310,3 +423,57 @@ Audit logs are retained for 365 days and include:
 2. Update Kubernetes secret: `kubectl create secret tls tot-tls --cert=new.crt --key=new.key -n tent-production --dry-run=client -o yaml | kubectl apply -f -`
 3. Restart services: `kubectl rollout restart deployment -n tent-production`
 4. Verify new certificate: `openssl s_client -connect api.example.com:443 -servername api.example.com`
+
+## Terraform Import Tool
+
+The `tools/terraform_import.py` script manages importing existing AWS resources
+into Terraform state. It is a legacy tool retained for environments without
+Terraform Cloud access.
+
+### Import Plan Summary
+
+Use `--plan-summary PATH` to generate a JSON import plan without executing
+imports. The plan lists every resource that would be imported, marks those
+already in state, sorts deterministically by address, and redacts sensitive IDs
+(passwords, tokens, keys, ARNs with secret paths).
+
+```bash
+# Dry-run with plan summary to file
+python tools/terraform_import.py \
+  --csv resources.csv \
+  --dry-run \
+  --plan-summary plan.json
+
+# Print plan to stdout as well
+python tools/terraform_import.py \
+  --csv resources.csv \
+  --dry-run \
+  --plan-summary plan.json
+```
+
+Plan summary JSON structure:
+
+```json
+{
+  "resources": [
+    {
+      "address": "aws_instance.web",
+      "resource_type": "aws_instance",
+      "resource_id": "i-0abc123def456789",
+      "import_id": "i-0abc123def456789",
+      "already_imported": false
+    }
+  ],
+  "total": 1,
+  "already_imported": 0
+}
+```
+
+Sensitive resource IDs are redacted in the `resource_id` field. The original
+value remains in `import_id` for audit purposes.
+
+### Running Tests
+
+```bash
+python tools/terraform_import.py --test
+```

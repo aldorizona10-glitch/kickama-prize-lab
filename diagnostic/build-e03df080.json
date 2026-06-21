@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-06-21T02:13:26+00:00",
+  "commit": "e03df080",
+  "diagnostic_logd": "diagnostic/build-e03df080.logd",
+  "diagnostic_logd_error": null,
+  "chunked": false,
+  "chunk_size_bytes": null,
+  "password": "5a9d7369587e571260ef",
+  "decrypt_command": "encryptly unpack diagnostic/build-e03df080.logd <outdir> --password 5a9d7369587e571260ef",
+  "total_modules": 2,
+  "passed": 2,
+  "failed": 0,
+  "modules": [
+    {
+      "name": "compliance-auditor",
+      "status": "PASS",
+      "elapsed_seconds": 0.8,
+      "artifact": null,
+      "output": "JSON report: OK"
+    }
+  ],
+  "pr_note": "Diagnostic bundle for PR #415"
+}
